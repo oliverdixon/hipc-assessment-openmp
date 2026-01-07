@@ -22,16 +22,16 @@ static void debug_print(
     }
 }
 
-static void serialise(const struct region * const region)
+static void serialise(const struct region *const region, const struct instance *const instance)
 {
-    FILE * const output_fp = fopen("./out/airfoil.vtk", "w");
-    region_serialise_vtk(region, output_fp);
+    FILE * const output_fp = fopen("./out/airfoil.vtr", "w");
+    region_serialise_vtk(region, instance, output_fp);
     fclose(output_fp);
 }
 
 int main()
 {
-    struct instance instance = instance_create();
+    const struct instance instance = instance_create();
     struct region region = region_create(&instance);
 
     instance_describe(&instance, stderr);
@@ -39,7 +39,7 @@ int main()
 
     region_initialise(&region, &instance);
 
-    static const compute_t max_simulation_runtime = 1.0;
+    static const compute_t max_simulation_runtime = 0.001; // TODO
     static const indexer_t sor_max_iterations = 100;
     static const compute_t sor_residual_epsilon = 0.001;
     static const indexer_t output_freq = 100;
@@ -70,7 +70,6 @@ int main()
         }
 
         region_update_velocities(&region, &instance);
-
         simulation_runtime += instance.timestep_duration;
 
         if (step_iteration % output_freq == 0)
@@ -79,7 +78,7 @@ int main()
         ++step_iteration;
     }
 
-    serialise(&region);
+    serialise(&region, &instance);
 
     region_destroy(&region);
     return EXIT_SUCCESS;

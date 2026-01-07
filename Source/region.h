@@ -31,35 +31,6 @@ enum cell_flags
 };
 
 /**
- * Bitwise flags indicating the characteristics of an entire region.
- */
-enum region_flags
-{
-    REGION_UNREMARKABLE = 0,
-
-    REGION_BOUNDARY_START_POSITION = 0,
-
-    REGION_NORTH_BOUNDARY = 1,
-    REGION_SOUTH_BOUNDARY = 1 << 1,
-    REGION_WEST_BOUNDARY = 1 << 2,
-    REGION_EAST_BOUNDARY = 1 << 3,
-};
-
-/**
- * Identifiers for the data matrices in a region.
- */
-enum matrix_identifier
-{
-    MATRIX_VELOCITY_X,
-    MATRIX_VELOCITY_Y,
-    MATRIX_TENTATIVE_VELOCITY_X,
-    MATRIX_TENTATIVE_VELOCITY_Y,
-    MATRIX_POISSON,
-    MATRIX_PRESSURE,
-    MATRIX_FLAGS,
-};
-
-/**
  * Derived region parameters used heavily by the iterative solvers.
  */
 struct cached_parameters
@@ -81,13 +52,11 @@ struct region
     compute_t *const *const poisson_source;
     enum cell_flags *const *const flags;
 
-    const enum region_flags region_flags;
     unsigned int fluid_cell_count;
 
-    const struct iterator h_interior;
-    const struct iterator v_interior;
-    const struct iterator h_exterior;
-    const struct iterator v_exterior;
+    const struct dim2 exterior_extent;
+    const struct dim2 interior_extent;
+
     const unsigned int resolution;
 
     const compute_t initial_velocity_x;
@@ -139,7 +108,7 @@ void region_apply_boundary_conditions(const struct region *region);
  */
 void region_initialise(struct region *region, const struct instance *instance);
 
-void region_serialise_vtk(const struct region *region, FILE *destination);
+void region_serialise_vtk(const struct region *region, const struct instance *instance, FILE *destination);
 
 /**
  * Compute the tentative velocities based on self- and cross-advection, and diffusion, from previous velocity values.

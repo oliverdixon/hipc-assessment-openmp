@@ -10,8 +10,12 @@ endif()
 find_package(OpenMP REQUIRED COMPONENTS C)
 
 add_executable(Airfoil_OpenMP
-        airfoil.c
-        airfoil.h
+        Source/airfoil.c
+        Source/instance.c
+        Source/instance.h
+        Source/region.c
+        Source/region.h
+        Source/types.h
 )
 
-target_link_libraries(Airfoil_OpenMP PRIVATE OpenMP::OpenMP_C)
+target_link_libraries(Airfoil_OpenMP PRIVATE OpenMP::OpenMP_C m)

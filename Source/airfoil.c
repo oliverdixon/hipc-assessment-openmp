@@ -35,11 +35,10 @@ int main()
     struct region region = region_create(&instance);
 
     instance_describe(&instance, stderr);
-    region_describe(&region, stderr);
 
     region_initialise(&region, &instance);
 
-    static const compute_t max_simulation_runtime = 0.001; // TODO
+    static const compute_t max_simulation_runtime = 0.1; // TODO
     static const indexer_t sor_max_iterations = 100;
     static const compute_t sor_residual_epsilon = 0.001;
     static const indexer_t output_freq = 100;

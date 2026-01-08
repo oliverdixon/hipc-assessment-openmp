@@ -53,11 +53,9 @@ struct region
     enum cell_flags *const *const flags;
 
     unsigned int fluid_cell_count;
-
-    const struct dim2 exterior_extent;
-    const struct dim2 interior_extent;
-
     const unsigned int resolution;
+
+    const struct dim2 extents;
 
     const compute_t initial_velocity_x;
     const compute_t initial_velocity_y;
@@ -81,15 +79,7 @@ struct region region_create(const struct instance *instance);
  *
  * @param region The region to destroy.
  */
-void region_destroy(struct region *region);
-
-/**
- * Produce a short, human-readable summary of the given region to the given file.
- *
- * @param region The region whose metadata to describe.
- * @param destination The destination stream for the metadata summary text.
- */
-void region_describe(const struct region *region, FILE *destination);
+void region_destroy(const struct region *region);
 
 /**
  * Apply horizontal fluid flow (in from the west; out to the east), and no-slip boundary conditions on the velocity

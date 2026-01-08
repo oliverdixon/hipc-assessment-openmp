@@ -119,11 +119,13 @@ static void write_initial_extreme_boundaries(const struct region *const region)
         .y = region->extents.y - 1,
     };
 
+    #pragma omp parallel for schedule(static) shared(flags, interior_extents) default(none)
     for (indexer_t h_idx = 0; h_idx < interior_extents.x; ++h_idx) {
         flags[h_idx][0] = CELL_BOUNDARY;
         flags[h_idx][interior_extents.y - 1] = CELL_BOUNDARY;
     }
 
+    #pragma omp parallel for schedule(static) shared(flags, interior_extents) default(none)
     for (indexer_t v_idx = 0; v_idx < interior_extents.y; ++v_idx) {
         flags[0][v_idx] = CELL_BOUNDARY;
         flags[interior_extents.x - 1][v_idx] = CELL_BOUNDARY;
@@ -385,30 +387,33 @@ void region_update_velocities(const struct region *const region, const struct in
      * represent fixed-axis grid spacings, warped by the timestep duration, to numerically approximate the next velocity
      * values in terms of the computed pressures.
      */
-    const compute_t x_pressure_diff_factor = instance->timestep_duration * region->resolution;
-    const compute_t y_pressure_diff_factor = instance->timestep_duration * region->resolution;
+    const compute_t pressure_diff_factor = instance->timestep_duration * region->resolution;
 
     // X velocities
     indexer_t h_bound = region->extents.x - 2;
     indexer_t v_bound = region->extents.y - 1;
 
-    #pragma omp parallel for collapse(2) schedule(static)
+    #pragma omp parallel for collapse(2) schedule(static) default(none) \
+        shared(region, pressure_diff_factor, h_bound, v_bound)
+
     for (indexer_t h_idx = 1; h_idx < h_bound; ++h_idx)
         for (indexer_t v_idx = 1; v_idx < v_bound; ++v_idx)
             if (region->flags[h_idx][v_idx] & CELL_FLUID && region->flags[h_idx + 1][v_idx] & CELL_FLUID)
                 region->velocity_x[h_idx][v_idx] = region->tentative_velocity_x[h_idx][v_idx] -
-                    (region->pressure[h_idx + 1][v_idx] - region->pressure[h_idx][v_idx]) * x_pressure_diff_factor;
+                    (region->pressure[h_idx + 1][v_idx] - region->pressure[h_idx][v_idx]) * pressure_diff_factor;
 
     // Y velocities
     h_bound = region->extents.x - 1;
     v_bound = region->extents.y - 2;
 
-    #pragma omp parallel for collapse(2) schedule(static)
+    #pragma omp parallel for collapse(2) schedule(static) default(none) \
+        shared(region, pressure_diff_factor, h_bound, v_bound)
+
     for (indexer_t h_idx = 1; h_idx < h_bound; ++h_idx)
         for (indexer_t v_idx = 1; v_idx < v_bound; ++v_idx)
             if (region->flags[h_idx][v_idx] & CELL_FLUID && region->flags[h_idx][v_idx + 1] & CELL_FLUID)
                 region->velocity_y[h_idx][v_idx] = region->tentative_velocity_y[h_idx][v_idx] -
-                    (region->pressure[h_idx][v_idx + 1] - region->pressure[h_idx][v_idx]) * y_pressure_diff_factor;
+                    (region->pressure[h_idx][v_idx + 1] - region->pressure[h_idx][v_idx]) * pressure_diff_factor;
 }
 
 void region_compute_tentative_velocities(const struct region *const region, const struct instance *instance)
@@ -430,6 +435,10 @@ void region_compute_tentative_velocities(const struct region *const region, cons
         .x = region->extents.x - 1,
         .y = region->extents.y - 1,
     };
+
+    #pragma omp parallel for collapse(2) schedule(static) default(none) \
+        shared(interior_extents, flags, velocity_x, velocity_y, gamma, quarter_resolution, sq_resolution, instance, \
+            reynolds, tentative_velocity_x)
 
     for (indexer_t h_idx = 1; h_idx < interior_extents.x - 1; ++h_idx)
         for (indexer_t v_idx = 1; v_idx < interior_extents.y; ++v_idx)
@@ -476,6 +485,10 @@ void region_compute_tentative_velocities(const struct region *const region, cons
             } else
                 // If both adjacent cells are not fluids, the velocity is unchanged.
                 tentative_velocity_x[h_idx][v_idx] = velocity_x[h_idx][v_idx];
+
+    #pragma omp parallel for collapse(2) schedule(static) default(none) \
+        shared(interior_extents, flags, velocity_x, velocity_y, gamma, quarter_resolution, sq_resolution, instance, \
+            reynolds, tentative_velocity_y)
 
     for (indexer_t h_idx = 1; h_idx < interior_extents.x; ++h_idx)
         for (indexer_t v_idx = 1; v_idx < interior_extents.y - 1; ++v_idx)
@@ -537,7 +550,10 @@ void region_compute_poisson_source(const struct region *const region, const stru
         .x = region->extents.x - 1,
         .y = region->extents.y - 1,
     };
-    
+
+    #pragma omp parallel for collapse(2) schedule(static) default(none) \
+        shared(interior_extents, tentative_velocity_x, tentative_velocity_y, flags, region, poisson_source, instance)
+
     for (indexer_t h_idx = 1; h_idx < interior_extents.x; ++h_idx)
         for (indexer_t v_idx = 1; v_idx < interior_extents.y; ++v_idx)
             if (flags[h_idx][v_idx] & CELL_FLUID) {
@@ -600,6 +616,16 @@ compute_t region_compute_poisson_residual(const struct region *const region)
 
 void region_initialise(struct region *const region, const struct instance *const instance)
 {
+    // Populate all cells' information matrices with fixed initial values.
+    #pragma omp parallel for collapse(2) schedule(static) shared(region) default(none)
+    for (indexer_t h_idx = 0; h_idx < region->extents.x; ++h_idx)
+        for (indexer_t v_idx = 0; v_idx < region->extents.y; ++v_idx) {
+            region->velocity_x[h_idx][v_idx] = region->initial_velocity_x;
+            region->velocity_y[h_idx][v_idx] = region->initial_velocity_y;
+            region->pressure[h_idx][v_idx] = region->initial_pressure;
+            region->flags[h_idx][v_idx] = region->initial_flag;
+        }
+
     // Transform the NACA digits into the scale expected by the initial boundary calculi.
     const float maximum_camber = (float) instance->naca_specifier.maximum_camber / 100.0f;
     const float edge_distance = (float) instance->naca_specifier.edge_distance / 10.0f;
@@ -610,15 +636,9 @@ void region_initialise(struct region *const region, const struct instance *const
         .y = region->extents.y - 1,
     };
 
+    #pragma omp parallel for schedule(static) default(none) \
+        shared(region, instance, maximum_camber, edge_distance, thickness)
     for (indexer_t h_idx = 0; h_idx < region->extents.x; ++h_idx) {
-        // Populate all cells' information matrices with fixed initial values.
-        for (indexer_t v_idx = 0; v_idx < region->extents.y; ++v_idx) {
-            region->velocity_x[h_idx][v_idx] = region->initial_velocity_x;
-            region->velocity_y[h_idx][v_idx] = region->initial_velocity_y;
-            region->pressure[h_idx][v_idx] = region->initial_pressure;
-            region->flags[h_idx][v_idx] = region->initial_flag;
-        }
-
         // Compute the vertical index boundaries of the airfoil body at the fixed horizontal index.
         const struct iterator v_idx_boundaries = get_initial_v_idx_boundaries(
                 region, instance->problem_size.y, maximum_camber, edge_distance, thickness, h_idx);
@@ -632,11 +652,13 @@ void region_initialise(struct region *const region, const struct instance *const
 
     // Mask in additional directional indicator flags for non-fluid cells, describing presence of nearby fluid cells.
     enum cell_flags * const * const flags = region->flags;
+    indexer_t fluid_cell_count = region->fluid_cell_count;
 
+    #pragma omp parallel for collapse(2) reduction(-:fluid_cell_count) default(none) shared(flags, interior_extents)
     for (indexer_t h_idx = 1; h_idx < interior_extents.x; ++h_idx)
         for (indexer_t v_idx = 1; v_idx < interior_extents.y; ++v_idx)
             if (!(flags[h_idx][v_idx] & CELL_FLUID)) {
-                --region->fluid_cell_count;
+                --fluid_cell_count;
 
                 if (flags[h_idx - 1][v_idx] & CELL_FLUID)
                     flags[h_idx][v_idx] |= CELL_FLUID_WEST;
@@ -647,6 +669,8 @@ void region_initialise(struct region *const region, const struct instance *const
                 if (flags[h_idx][v_idx - 1] & CELL_FLUID)
                     flags[h_idx][v_idx] |= CELL_FLUID_NORTH;
             }
+
+    region->fluid_cell_count = fluid_cell_count;
 }
 
 void region_serialise_vtk(const struct region *const region, const struct instance *const instance,

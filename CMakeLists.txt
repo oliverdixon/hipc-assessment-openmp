@@ -18,4 +18,17 @@ add_executable(Airfoil_OpenMP
         Source/types.h
 )
 
+set_property(TARGET Airfoil_OpenMP PROPERTY CMAKE_C_STANDARD 11)
 target_link_libraries(Airfoil_OpenMP PRIVATE OpenMP::OpenMP_C m)
+
+if (CMAKE_C_COMPILER_ID STREQUAL "IntelLLVM")
+    target_link_options(Airfoil_OpenMP PRIVATE -fuse-ld=lld)
+    target_compile_options(Airfoil_OpenMP PRIVATE
+            -axCORE-AVX2
+            -fast
+            -Rpass=loop-vectorize
+            -Rpass-analysis=loop-vectorize
+            -Rpass-missed=loop-vectorize
+            -fsave-optimization-record
+    )
+endif ()

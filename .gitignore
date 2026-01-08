@@ -1,5 +1,6 @@
 /cmake-build-*
 /out
+/openmp_advisor
 
 .idea/runConfigurations
 .idea/cmake.xml

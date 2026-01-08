@@ -2,6 +2,13 @@
   "version": 3,
   "configurePresets": [
     {
+      "name": "viking",
+      "environment": {
+        "CC": "icx",
+        "CXX": "icpx"
+      }
+    },
+    {
       "name": "usb-local",
       "environment": {
         "CC": "/home/userfs/o/od641/usb/files/clang/usr/bin/cc"

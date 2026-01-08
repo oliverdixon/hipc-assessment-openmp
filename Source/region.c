@@ -412,44 +412,30 @@ void region_update_velocities(const struct region *const region, const struct in
      */
     const compute_t pressure_diff_factor = instance->timestep_duration * region->resolution;
 
-    // X velocities
-    indexer_t h_bound = region->extents.x - 2;
-    indexer_t v_bound = region->extents.y - 1;
+    #pragma omp parallel default(none) shared(region, pressure_diff_factor)
+    {
+        // X velocities
+        #pragma omp for collapse(2) schedule(static) nowait
+        for (indexer_t h_idx = 1; h_idx < region->extents.x - 2; ++h_idx)
+            for (indexer_t v_idx = 1; v_idx < region->extents.y - 1; ++v_idx)
+                if (region->flags[h_idx][v_idx] & CELL_FLUID && region->flags[h_idx + 1][v_idx] & CELL_FLUID)
+                    region->velocity_x[h_idx][v_idx] = region->tentative_velocity_x[h_idx][v_idx] -
+                        (region->pressure[h_idx + 1][v_idx] - region->pressure[h_idx][v_idx]) * pressure_diff_factor;
 
-    #pragma omp parallel for collapse(2) schedule(static) default(none) \
-        shared(region, pressure_diff_factor, h_bound, v_bound)
-
-    for (indexer_t h_idx = 1; h_idx < h_bound; ++h_idx)
-        for (indexer_t v_idx = 1; v_idx < v_bound; ++v_idx)
-            if (region->flags[h_idx][v_idx] & CELL_FLUID && region->flags[h_idx + 1][v_idx] & CELL_FLUID)
-                region->velocity_x[h_idx][v_idx] = region->tentative_velocity_x[h_idx][v_idx] -
-                    (region->pressure[h_idx + 1][v_idx] - region->pressure[h_idx][v_idx]) * pressure_diff_factor;
-
-    // Y velocities
-    h_bound = region->extents.x - 1;
-    v_bound = region->extents.y - 2;
-
-    #pragma omp parallel for collapse(2) schedule(static) default(none) \
-        shared(region, pressure_diff_factor, h_bound, v_bound)
-
-    for (indexer_t h_idx = 1; h_idx < h_bound; ++h_idx)
-        for (indexer_t v_idx = 1; v_idx < v_bound; ++v_idx)
-            if (region->flags[h_idx][v_idx] & CELL_FLUID && region->flags[h_idx][v_idx + 1] & CELL_FLUID)
-                region->velocity_y[h_idx][v_idx] = region->tentative_velocity_y[h_idx][v_idx] -
-                    (region->pressure[h_idx][v_idx + 1] - region->pressure[h_idx][v_idx]) * pressure_diff_factor;
+        // Y velocities
+        #pragma omp for collapse(2) schedule(static) nowait
+        for (indexer_t h_idx = 1; h_idx < region->extents.x - 1; ++h_idx)
+            for (indexer_t v_idx = 1; v_idx < region->extents.y - 2; ++v_idx)
+                if (region->flags[h_idx][v_idx] & CELL_FLUID && region->flags[h_idx][v_idx + 1] & CELL_FLUID)
+                    region->velocity_y[h_idx][v_idx] = region->tentative_velocity_y[h_idx][v_idx] -
+                        (region->pressure[h_idx][v_idx + 1] - region->pressure[h_idx][v_idx]) * pressure_diff_factor;
+    }
 }
 
 void region_compute_tentative_velocities(const struct region *const region, const struct instance *instance)
 {
     static const compute_t reynolds = 500.0;
     static const compute_t gamma = 0.9; // Upwind differencing factor in PDE discretisation
-
-    // Get local copies of pointers to avoid excessive dereferencing in loop.
-    compute_t * const * const velocity_x = region->velocity_x;
-    compute_t * const * const velocity_y = region->velocity_y;
-    compute_t * const * const tentative_velocity_x = region->tentative_velocity_x;
-    compute_t * const * const tentative_velocity_y = region->tentative_velocity_y;
-    enum cell_flags * const * const flags = region->flags;
 
     const compute_t quarter_resolution = region->resolution / 4.0;
     const compute_t sq_resolution = region->resolution * region->resolution;
@@ -459,105 +445,112 @@ void region_compute_tentative_velocities(const struct region *const region, cons
         .y = region->extents.y - 1,
     };
 
-    #pragma omp parallel for collapse(2) schedule(static) default(none) \
-        shared(interior_extents, flags, velocity_x, velocity_y, gamma, quarter_resolution, sq_resolution, instance, \
-            reynolds, tentative_velocity_x)
+    #pragma omp parallel default(none) \
+        shared(interior_extents, gamma, quarter_resolution, sq_resolution, instance, region, reynolds)
+    {
+        // Get local copies of pointers to avoid excessive dereferencing in loop.
+        compute_t * const * const velocity_x = region->velocity_x;
+        compute_t * const * const velocity_y = region->velocity_y;
+        enum cell_flags * const * const flags = region->flags;
 
-    for (indexer_t h_idx = 1; h_idx < interior_extents.x - 1; ++h_idx)
-        for (indexer_t v_idx = 1; v_idx < interior_extents.y; ++v_idx)
-            if (flags[h_idx][v_idx] & CELL_FLUID && flags[h_idx + 1][v_idx] & CELL_FLUID) {
+        // X tentative velocities
+        compute_t * const * const tentative_velocity_x = region->tentative_velocity_x;
+        #pragma omp for collapse(2) schedule(static) nowait
+        for (indexer_t h_idx = 1; h_idx < interior_extents.x - 1; ++h_idx)
+            for (indexer_t v_idx = 1; v_idx < interior_extents.y; ++v_idx)
+                if (flags[h_idx][v_idx] & CELL_FLUID && flags[h_idx + 1][v_idx] & CELL_FLUID) {
 
-                const compute_t self_advection_x =
-                    (
-                        (velocity_x[h_idx][v_idx] + velocity_x[h_idx + 1][v_idx]) *
-                        (velocity_x[h_idx][v_idx] + velocity_x[h_idx + 1][v_idx]) +
-                        gamma * fabs(velocity_x[h_idx][v_idx] + velocity_x[h_idx + 1][v_idx]) *
-                        (velocity_x[h_idx][v_idx] - velocity_x[h_idx + 1][v_idx]) -
-                        (velocity_x[h_idx - 1][v_idx] + velocity_x[h_idx][v_idx]) *
-                        (velocity_x[h_idx - 1][v_idx] + velocity_x[h_idx][v_idx]) -
-                        gamma * fabs(velocity_x[h_idx - 1][v_idx] + velocity_x[h_idx][v_idx]) *
-                        (velocity_x[h_idx - 1][v_idx] - velocity_x[h_idx][v_idx])
-                    ) * quarter_resolution;
+                    const compute_t self_advection_x =
+                        (
+                            (velocity_x[h_idx][v_idx] + velocity_x[h_idx + 1][v_idx]) *
+                            (velocity_x[h_idx][v_idx] + velocity_x[h_idx + 1][v_idx]) +
+                            gamma * fabs(velocity_x[h_idx][v_idx] + velocity_x[h_idx + 1][v_idx]) *
+                            (velocity_x[h_idx][v_idx] - velocity_x[h_idx + 1][v_idx]) -
+                            (velocity_x[h_idx - 1][v_idx] + velocity_x[h_idx][v_idx]) *
+                            (velocity_x[h_idx - 1][v_idx] + velocity_x[h_idx][v_idx]) -
+                            gamma * fabs(velocity_x[h_idx - 1][v_idx] + velocity_x[h_idx][v_idx]) *
+                            (velocity_x[h_idx - 1][v_idx] - velocity_x[h_idx][v_idx])
+                        ) * quarter_resolution;
 
-                const compute_t cross_advection_y =
-                    (
-                        (velocity_y[h_idx][v_idx] + velocity_y[h_idx + 1][v_idx]) *
-                        (velocity_x[h_idx][v_idx] + velocity_x[h_idx][v_idx + 1]) +
-                        gamma * fabs(velocity_y[h_idx][v_idx] + velocity_y[h_idx + 1][v_idx]) *
-                        (velocity_x[h_idx][v_idx] - velocity_x[h_idx][v_idx + 1]) -
-                        (velocity_y[h_idx][v_idx - 1] + velocity_y[h_idx + 1][v_idx - 1]) *
-                        (velocity_x[h_idx][v_idx - 1] + velocity_x[h_idx][v_idx]) -
-                        gamma * fabs(velocity_y[h_idx][v_idx - 1] +
-                            velocity_y[h_idx + 1][v_idx - 1]) *
-                        (velocity_x[h_idx][v_idx - 1] - velocity_x[h_idx][v_idx])
-                    ) * quarter_resolution;
+                    const compute_t cross_advection_y =
+                        (
+                            (velocity_y[h_idx][v_idx] + velocity_y[h_idx + 1][v_idx]) *
+                            (velocity_x[h_idx][v_idx] + velocity_x[h_idx][v_idx + 1]) +
+                            gamma * fabs(velocity_y[h_idx][v_idx] + velocity_y[h_idx + 1][v_idx]) *
+                            (velocity_x[h_idx][v_idx] - velocity_x[h_idx][v_idx + 1]) -
+                            (velocity_y[h_idx][v_idx - 1] + velocity_y[h_idx + 1][v_idx - 1]) *
+                            (velocity_x[h_idx][v_idx - 1] + velocity_x[h_idx][v_idx]) -
+                            gamma * fabs(velocity_y[h_idx][v_idx - 1] +
+                                velocity_y[h_idx + 1][v_idx - 1]) *
+                            (velocity_x[h_idx][v_idx - 1] - velocity_x[h_idx][v_idx])
+                        ) * quarter_resolution;
 
-                const compute_t diffusion =
-                    (
-                        velocity_x[h_idx + 1][v_idx] -
-                        2.0 * velocity_x[h_idx][v_idx] +
-                        velocity_x[h_idx - 1][v_idx] +
-                        velocity_x[h_idx][v_idx + 1] -
-                        2.0 * velocity_x[h_idx][v_idx] +
-                        velocity_x[h_idx][v_idx - 1]
-                    ) * sq_resolution;
+                    const compute_t diffusion =
+                        (
+                            velocity_x[h_idx + 1][v_idx] -
+                            2.0 * velocity_x[h_idx][v_idx] +
+                            velocity_x[h_idx - 1][v_idx] +
+                            velocity_x[h_idx][v_idx + 1] -
+                            2.0 * velocity_x[h_idx][v_idx] +
+                            velocity_x[h_idx][v_idx - 1]
+                        ) * sq_resolution;
 
-                tentative_velocity_x[h_idx][v_idx] = velocity_x[h_idx][v_idx] + instance->timestep_duration *
-                    (diffusion / reynolds - self_advection_x - cross_advection_y);
+                    tentative_velocity_x[h_idx][v_idx] = velocity_x[h_idx][v_idx] + instance->timestep_duration *
+                        (diffusion / reynolds - self_advection_x - cross_advection_y);
 
-            } else
-                // If both adjacent cells are not fluids, the velocity is unchanged.
-                tentative_velocity_x[h_idx][v_idx] = velocity_x[h_idx][v_idx];
+                } else
+                    // If both adjacent cells are not fluids, the velocity is unchanged.
+                    tentative_velocity_x[h_idx][v_idx] = velocity_x[h_idx][v_idx];
 
-    #pragma omp parallel for collapse(2) schedule(static) default(none) \
-        shared(interior_extents, flags, velocity_x, velocity_y, gamma, quarter_resolution, sq_resolution, instance, \
-            reynolds, tentative_velocity_y)
+        // Y tentative velocities
+        compute_t * const * const tentative_velocity_y = region->tentative_velocity_y;
+        #pragma omp for collapse(2) schedule(static) nowait
+        for (indexer_t h_idx = 1; h_idx < interior_extents.x; ++h_idx)
+            for (indexer_t v_idx = 1; v_idx < interior_extents.y - 1; ++v_idx)
+                if (flags[h_idx][v_idx] & CELL_FLUID && flags[h_idx][v_idx + 1] & CELL_FLUID) {
 
-    for (indexer_t h_idx = 1; h_idx < interior_extents.x; ++h_idx)
-        for (indexer_t v_idx = 1; v_idx < interior_extents.y - 1; ++v_idx)
-            if (flags[h_idx][v_idx] & CELL_FLUID && flags[h_idx][v_idx + 1] & CELL_FLUID) {
+                    const compute_t cross_advection_x =
+                        (
+                            (velocity_x[h_idx][v_idx] + velocity_x[h_idx][v_idx + 1]) *
+                            (velocity_y[h_idx][v_idx] + velocity_y[h_idx + 1][v_idx]) +
+                            gamma * fabs(velocity_x[h_idx][v_idx] + velocity_x[h_idx][v_idx + 1]) *
+                            (velocity_y[h_idx][v_idx] - velocity_y[h_idx + 1][v_idx]) -
+                            (velocity_x[h_idx - 1][v_idx] + velocity_x[h_idx - 1][v_idx + 1]) *
+                            (velocity_y[h_idx - 1][v_idx] + velocity_y[h_idx][v_idx]) -
+                            gamma * fabs(velocity_x[h_idx - 1][v_idx] +
+                                velocity_x[h_idx - 1][v_idx + 1]) *
+                            (velocity_y[h_idx - 1][v_idx] - velocity_y[h_idx][v_idx])
+                        ) * quarter_resolution;
 
-                const compute_t cross_advection_x =
-                    (
-                        (velocity_x[h_idx][v_idx] + velocity_x[h_idx][v_idx + 1]) *
-                        (velocity_y[h_idx][v_idx] + velocity_y[h_idx + 1][v_idx]) +
-                        gamma * fabs(velocity_x[h_idx][v_idx] + velocity_x[h_idx][v_idx + 1]) *
-                        (velocity_y[h_idx][v_idx] - velocity_y[h_idx + 1][v_idx]) -
-                        (velocity_x[h_idx - 1][v_idx] + velocity_x[h_idx - 1][v_idx + 1]) *
-                        (velocity_y[h_idx - 1][v_idx] + velocity_y[h_idx][v_idx]) -
-                        gamma * fabs(velocity_x[h_idx - 1][v_idx] +
-                            velocity_x[h_idx - 1][v_idx + 1]) *
-                        (velocity_y[h_idx - 1][v_idx] - velocity_y[h_idx][v_idx])
-                    ) * quarter_resolution;
+                    const compute_t self_advection_y =
+                        (
+                            (velocity_y[h_idx][v_idx] + velocity_y[h_idx][v_idx + 1]) *
+                            (velocity_y[h_idx][v_idx] + velocity_y[h_idx][v_idx + 1]) +
+                            gamma * fabs(velocity_y[h_idx][v_idx] + velocity_y[h_idx][v_idx + 1]) *
+                            (velocity_y[h_idx][v_idx] - velocity_y[h_idx][v_idx + 1]) -
+                            (velocity_y[h_idx][v_idx - 1] + velocity_y[h_idx][v_idx]) *
+                            (velocity_y[h_idx][v_idx - 1] + velocity_y[h_idx][v_idx]) -
+                            gamma * fabs(velocity_y[h_idx][v_idx - 1] + velocity_y[h_idx][v_idx]) *
+                            (velocity_y[h_idx][v_idx - 1] - velocity_y[h_idx][v_idx])
+                        ) * quarter_resolution;
 
-                const compute_t self_advection_y =
-                    (
-                        (velocity_y[h_idx][v_idx] + velocity_y[h_idx][v_idx + 1]) *
-                        (velocity_y[h_idx][v_idx] + velocity_y[h_idx][v_idx + 1]) +
-                        gamma * fabs(velocity_y[h_idx][v_idx] + velocity_y[h_idx][v_idx + 1]) *
-                        (velocity_y[h_idx][v_idx] - velocity_y[h_idx][v_idx + 1]) -
-                        (velocity_y[h_idx][v_idx - 1] + velocity_y[h_idx][v_idx]) *
-                        (velocity_y[h_idx][v_idx - 1] + velocity_y[h_idx][v_idx]) -
-                        gamma * fabs(velocity_y[h_idx][v_idx - 1] + velocity_y[h_idx][v_idx]) *
-                        (velocity_y[h_idx][v_idx - 1] - velocity_y[h_idx][v_idx])
-                    ) * quarter_resolution;
+                    const compute_t diffusion =
+                        (
+                            velocity_y[h_idx + 1][v_idx] -
+                            2.0 * velocity_y[h_idx][v_idx] +
+                            velocity_y[h_idx - 1][v_idx] +
+                            velocity_y[h_idx][v_idx + 1] -
+                            2.0 * velocity_y[h_idx][v_idx] +
+                            velocity_y[h_idx][v_idx - 1]
+                        ) * sq_resolution;
 
-                const compute_t diffusion =
-                    (
-                        velocity_y[h_idx + 1][v_idx] -
-                        2.0 * velocity_y[h_idx][v_idx] +
-                        velocity_y[h_idx - 1][v_idx] +
-                        velocity_y[h_idx][v_idx + 1] -
-                        2.0 * velocity_y[h_idx][v_idx] +
-                        velocity_y[h_idx][v_idx - 1]
-                    ) * sq_resolution;
+                    tentative_velocity_y[h_idx][v_idx] = velocity_y[h_idx][v_idx] + instance->timestep_duration *
+                        (diffusion / reynolds - cross_advection_x - self_advection_y);
 
-                tentative_velocity_y[h_idx][v_idx] = velocity_y[h_idx][v_idx] + instance->timestep_duration *
-                    (diffusion / reynolds - cross_advection_x - self_advection_y);
-
-            } else
-                // If both adjacent cells are not fluids, the velocity is unchanged.
-                tentative_velocity_y[h_idx][v_idx] = velocity_y[h_idx][v_idx];
+                } else
+                    // If both adjacent cells are not fluids, the velocity is unchanged.
+                    tentative_velocity_y[h_idx][v_idx] = velocity_y[h_idx][v_idx];
+    }
 }
 
 void region_compute_poisson_source(const struct region *const region, const struct instance *instance)

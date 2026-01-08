@@ -11,17 +11,6 @@
 #include "instance.h"
 #include "region.h"
 
-static void debug_print(
-        compute_t *const *const array, const struct iterator h_bounds, const struct iterator v_bounds,
-        FILE *const destination)
-{
-    for (indexer_t v_idx = v_bounds.begin; v_idx < v_bounds.end; ++v_idx) {
-        for (indexer_t h_idx = h_bounds.begin; h_idx < h_bounds.end; ++h_idx)
-            fprintf(destination, "%+10lf ", array[h_idx][v_idx]);
-        fputc('\n', destination);
-    }
-}
-
 static void serialise(const struct region *const region, const struct instance *const instance)
 {
     FILE * const output_fp = fopen("./out/airfoil.vtr", "w");
@@ -38,7 +27,7 @@ int main()
 
     region_initialise(&region, &instance);
 
-    static const compute_t max_simulation_runtime = 0.1; // TODO
+    static const compute_t max_simulation_runtime = 1.0;
     static const indexer_t sor_max_iterations = 100;
     static const compute_t sor_residual_epsilon = 0.001;
     static const indexer_t output_freq = 100;
@@ -53,17 +42,12 @@ int main()
         region_compute_poisson_source(&region, &instance);
 
         compute_t residual = INT_MAX;
-
         for (indexer_t sor_iteration = 0; sor_iteration < sor_max_iterations; ++sor_iteration) {
             // Perform an SOR cycle and halo-exchange the pressure matrix.
             region_sor_cycle(&region, &instance);
 
-#if 0 // TODO
             // Compute the global residual L_2 norm given the cumulative residual and total fluid cell count.
-            residual = region_compute_poisson_residual(&region);
-            residual = residual / fluid_cell_sum;
-#endif
-
+            residual = region_compute_poisson_residual(&region) / region.fluid_cell_count;
             if (fabs(residual) < sor_residual_epsilon * sor_residual_epsilon)
                 break;
         }

@@ -3,14 +3,12 @@
 //
 
 #include <math.h>
+#include <stdbool.h>
 #include <stdlib.h>
 #include <strings.h>
-#include <omp.h>
 
 #include "instance.h"
 #include "region.h"
-
-#include <stdbool.h>
 
 enum cell_tags
 {
@@ -191,6 +189,9 @@ static void sor_cycle_phase(const struct region *const region, const compute_t o
         .y = region->extents.y - 1,
     };
 
+    #pragma omp parallel for schedule(static) default(none) \
+        shared(interior_extents, phase, region, step_sq, internal_weight, omega)
+
     for (indexer_t v_idx = 1; v_idx < interior_extents.y; ++v_idx)
         for (indexer_t h_idx = 1 + (phase - v_idx & 1); h_idx < interior_extents.x; h_idx += 2) {
             if ((region->flags[h_idx][v_idx] & CELL_FLUID_ALL) == 0)
@@ -205,6 +206,9 @@ static void sor_cycle_phase(const struct region *const region, const compute_t o
             region->pressure[h_idx][v_idx] = (1 - omega) * region->pressure[h_idx][v_idx] + internal_weight *
                 (x_spatial + y_spatial - region->poisson_source[h_idx][v_idx]);
         }
+
+    #pragma omp parallel for schedule(static) default(none) \
+        shared(interior_extents, phase, region, step_sq, internal_weight, omega)
 
     for (indexer_t v_idx = 1; v_idx < interior_extents.y; ++v_idx)
         for (indexer_t h_idx = 1 + (phase - v_idx & 1); h_idx < interior_extents.x; h_idx += 2) {
@@ -291,16 +295,18 @@ void region_apply_boundary_conditions(const struct region *const region)
         .y = region->extents.y - 1,
     };
 
+    #pragma omp parallel for schedule(static) shared(velocity_x, velocity_y, region) default(none)
     for (indexer_t v_idx = 0; v_idx < region->extents.y; ++v_idx) {
         // Fluid freely flows in from the west
-        velocity_x[0][v_idx] = velocity_x[0 + 1][v_idx];
-        velocity_y[0][v_idx] = velocity_y[0 + 1][v_idx];
+        velocity_x[0][v_idx] = velocity_x[1][v_idx];
+        velocity_y[0][v_idx] = velocity_y[1][v_idx];
 
         // Fluid freely flows out to the east
         velocity_x[region->extents.x - 2][v_idx] = velocity_x[region->extents.x - 3][v_idx];
         velocity_y[region->extents.x - 1][v_idx] = velocity_y[region->extents.x - 2][v_idx];
     }
 
+    #pragma omp parallel for schedule(static) shared(velocity_x, velocity_y, region, interior_extents) default(none)
     for (indexer_t h_idx = 0; h_idx < interior_extents.x; ++h_idx) {
         /*
          * The vertical velocity approaches zero at the north and south boundaries, but fluid flows freely in the
@@ -314,7 +320,8 @@ void region_apply_boundary_conditions(const struct region *const region)
 
     /*
      * Apply no-slip boundary conditions to cells that are adjacent to internal obstacle cells. This forces the
-     * velocities to tend towards zero in these cells.
+     * velocities to tend towards zero in these cells. This portion is not parallelised as the number of boundary cells
+     * is small, and establishment of boundary conditions requires writes into neighbouring cells.
      */
     for (indexer_t h_idx = 1; h_idx < interior_extents.x; ++h_idx)
         for (indexer_t v_idx = 1; v_idx < interior_extents.y; ++v_idx)
@@ -371,9 +378,9 @@ void region_apply_boundary_conditions(const struct region *const region)
      * If we're on a western boundary, fix the western-edge velocities such that there is a continual flow of fluid
      * into the simulation space.
      */
-    // TODO: is this first assignment needed?
     velocity_y[0][0] = 2 * region->initial_velocity_y - velocity_y[1][0];
 
+    #pragma omp parallel for schedule(static) default(none) shared(velocity_x, velocity_y, region, interior_extents)
     for (indexer_t v_idx = 1; v_idx < interior_extents.y; ++v_idx) {
         velocity_x[0][v_idx] = region->initial_velocity_x;
         velocity_y[0][v_idx] = 2 * region->initial_velocity_y - velocity_y[1][v_idx];
@@ -576,19 +583,22 @@ void region_sor_cycle(const struct region *const region, const struct instance *
      */
 
     sor_cycle_phase(region, instance->sor_omega, SOR_RED);
+    #pragma omp barrier
     sor_cycle_phase(region, instance->sor_omega, SOR_BLACK);
 }
 
 compute_t region_compute_poisson_residual(const struct region *const region)
 {
     const compute_t step_sq = region->derived_params.resolution_sq;
-    compute_t residual = 0.0;
-
     const struct dim2 interior_extents = {
         .x = region->extents.x - 1,
         .y = region->extents.y - 1,
     };
 
+    compute_t residual = 0.0;
+
+    #pragma omp parallel for collapse(2) reduction(+:residual) schedule(static) default(none) \
+        shared(interior_extents, region, step_sq)
     for (indexer_t h_idx = 1; h_idx < interior_extents.x; ++h_idx)
         for (indexer_t v_idx = 1; v_idx < interior_extents.y; ++v_idx)
             if (region->flags[h_idx][v_idx] & CELL_FLUID) {

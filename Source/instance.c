@@ -2,6 +2,8 @@
 // Created by od641 on 18/11/2025.
 //
 
+#include <omp.h>
+
 #include "instance.h"
 #include "region.h"
 
@@ -28,9 +30,10 @@ void instance_describe(const struct instance *instance, FILE *const destination)
     fprintf(destination,
             "Instance statistics:\n\t"
             "Global problem size: (%lf, %lf)\n\t"
-            "NACA specifier: %2d%1d%1d\n",
+            "NACA specifier: %2d%1d%1d\n\t"
+            "OMP maximum thread count: %d\n",
 
             instance->problem_size.x, instance->problem_size.y,
             instance->naca_specifier.maximum_camber, instance->naca_specifier.edge_distance,
-            instance->naca_specifier.maximum_thickness);
+            instance->naca_specifier.maximum_thickness, omp_get_max_threads());
 }

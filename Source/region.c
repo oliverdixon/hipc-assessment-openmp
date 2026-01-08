@@ -3,7 +3,6 @@
 //
 
 #include <math.h>
-#include <stdbool.h>
 #include <stdlib.h>
 #include <strings.h>
 
@@ -183,55 +182,69 @@ static void fix_tentative_boundaries(const struct region * const region)
 static void sor_cycle_phase(const struct region *const region, const compute_t omega, const enum sor_phase phase)
 {
     const compute_t step_sq = region->derived_params.resolution_sq;
-    const compute_t internal_weight = omega / (4.0 * step_sq);
     const struct dim2 interior_extents = {
         .x = region->extents.x - 1,
         .y = region->extents.y - 1,
     };
 
-    #pragma omp parallel for schedule(static) default(none) \
-        shared(interior_extents, phase, region, step_sq, internal_weight, omega)
+    #pragma omp parallel for schedule(static) default(none) collapse(2) \
+        shared(interior_extents, region, phase, step_sq, omega)
 
-    for (indexer_t v_idx = 1; v_idx < interior_extents.y; ++v_idx)
-        for (indexer_t h_idx = 1 + (phase - v_idx & 1); h_idx < interior_extents.x; h_idx += 2) {
-            if ((region->flags[h_idx][v_idx] & CELL_FLUID_ALL) == 0)
-                continue;
-
-            const compute_t x_spatial = (region->pressure[h_idx + 1][v_idx] +
-                    region->pressure[h_idx - 1][v_idx]) * step_sq;
-
-            const compute_t y_spatial = (region->pressure[h_idx][v_idx + 1] +
-                region->pressure[h_idx][v_idx - 1]) * step_sq;
-
-            region->pressure[h_idx][v_idx] = (1 - omega) * region->pressure[h_idx][v_idx] + internal_weight *
-                (x_spatial + y_spatial - region->poisson_source[h_idx][v_idx]);
-        }
-
-    #pragma omp parallel for schedule(static) default(none) \
-        shared(interior_extents, phase, region, step_sq, internal_weight, omega)
-
-    for (indexer_t v_idx = 1; v_idx < interior_extents.y; ++v_idx)
-        for (indexer_t h_idx = 1 + (phase - v_idx & 1); h_idx < interior_extents.x; h_idx += 2) {
-            if ((region->flags[h_idx][v_idx] & CELL_FLUID) == 0)
-                continue;
+    for (indexer_t h_idx = 1; h_idx < interior_extents.x; ++h_idx)
+        // Align to correct parity for RB indexing. See Figure 2 of https://arxiv.org/abs/1401.0763.
+        for (indexer_t v_idx = 1 + (h_idx + 1 & 1 ^ (indexer_t) phase); v_idx < interior_extents.y; v_idx += 2) {
+            compute_t weight;
 
             // Epsilon parameters indicate whether fluid lies in the cell in the corresponding direction.
-            const bool epsilon_east = !!(region->flags[h_idx + 1][v_idx] & CELL_FLUID);
-            const bool epsilon_west = !!(region->flags[h_idx - 1][v_idx] & CELL_FLUID);
-            const bool epsilon_north = !!(region->flags[h_idx][v_idx + 1] & CELL_FLUID);
-            const bool epsilon_south = !!(region->flags[h_idx][v_idx - 1] & CELL_FLUID);
+            compute_t epsilon[4] = {
+                (region->flags[h_idx][v_idx + 1] & CELL_FLUID) >> 4, // North
+                (region->flags[h_idx][v_idx - 1] & CELL_FLUID) >> 4, // South
+                (region->flags[h_idx + 1][v_idx] & CELL_FLUID) >> 4, // East
+                (region->flags[h_idx - 1][v_idx] & CELL_FLUID) >> 4, // West
+            };
 
-            const compute_t weight = omega / ((epsilon_east + epsilon_west) * step_sq +
-                (epsilon_north + epsilon_south) * step_sq);
+            const compute_t poisson[5] = {
+                region->poisson_source[h_idx][v_idx + 1], // North
+                region->poisson_source[h_idx][v_idx - 1], // South
+                region->poisson_source[h_idx + 1][v_idx], // East
+                region->poisson_source[h_idx - 1][v_idx], // West
+                region->poisson_source[h_idx][v_idx],     // Self
+            };
 
-            const compute_t x_spatial = (epsilon_east * region->pressure[h_idx + 1][v_idx] +
-                epsilon_west * region->pressure[h_idx - 1][v_idx]) * step_sq;
+            const compute_t pressure[5] = {
+                region->pressure[h_idx][v_idx + 1], // North
+                region->pressure[h_idx][v_idx - 1], // South
+                region->pressure[h_idx + 1][v_idx], // East
+                region->pressure[h_idx - 1][v_idx], // West
+                region->pressure[h_idx][v_idx],     // Self
+            };
 
-            const compute_t y_spatial = (epsilon_north * region->pressure[h_idx][v_idx + 1] +
-                epsilon_south * region->pressure[h_idx][v_idx - 1]) * step_sq;
+            if (region->flags[h_idx][v_idx] & CELL_FLUID)
 
-            region->pressure[h_idx][v_idx] = (1 - omega) * region->pressure[h_idx][v_idx] + weight *
-                (x_spatial + y_spatial - region->poisson_source[h_idx][v_idx]);
+                weight = omega / ((epsilon[TAGS_EAST] + epsilon[TAGS_WEST] + epsilon[TAGS_NORTH] + epsilon[TAGS_SOUTH])
+                    * step_sq);
+
+            else {
+
+                epsilon[TAGS_EAST] = 0.0;
+                epsilon[TAGS_WEST] = pressure[TAGS_WEST] == 0.0 ?
+                    0.0 : omega * pressure[TAGS_SELF] / pressure[TAGS_WEST] / step_sq;
+                epsilon[TAGS_SOUTH] = 0.0;
+                epsilon[TAGS_NORTH] = pressure[TAGS_NORTH] == 0.0 ?
+                    0.0 : poisson[TAGS_SELF] / pressure[TAGS_NORTH] / step_sq;
+
+                weight = 1.0;
+
+            }
+
+            const compute_t x_spatial = epsilon[TAGS_EAST] * pressure[TAGS_EAST] +
+                    epsilon[TAGS_WEST] * pressure[TAGS_WEST];
+
+            const compute_t y_spatial = epsilon[TAGS_NORTH] * pressure[TAGS_NORTH] +
+                epsilon[TAGS_SOUTH] * pressure[TAGS_SOUTH];
+
+            region->pressure[h_idx][v_idx] = (1 - omega) * pressure[TAGS_SELF] + weight *
+                (step_sq * (x_spatial + y_spatial) - poisson[TAGS_SELF]);
         }
 }
 
@@ -282,6 +295,7 @@ void region_destroy(const struct region *const region)
     free_2d_array((void **) region->tentative_velocity_x);
     free_2d_array((void **) region->tentative_velocity_y);
     free_2d_array((void **) region->pressure);
+    free_2d_array((void **) region->poisson_source);
     free_2d_array((void **) region->flags);
 }
 
@@ -296,6 +310,7 @@ void region_apply_boundary_conditions(const struct region *const region)
     };
 
     #pragma omp parallel for schedule(static) shared(velocity_x, velocity_y, region) default(none)
+
     for (indexer_t v_idx = 0; v_idx < region->extents.y; ++v_idx) {
         // Fluid freely flows in from the west
         velocity_x[0][v_idx] = velocity_x[1][v_idx];
@@ -307,6 +322,7 @@ void region_apply_boundary_conditions(const struct region *const region)
     }
 
     #pragma omp parallel for schedule(static) shared(velocity_x, velocity_y, region, interior_extents) default(none)
+
     for (indexer_t h_idx = 0; h_idx < interior_extents.x; ++h_idx) {
         /*
          * The vertical velocity approaches zero at the north and south boundaries, but fluid flows freely in the
@@ -426,7 +442,7 @@ void region_update_velocities(const struct region *const region, const struct in
 void region_compute_tentative_velocities(const struct region *const region, const struct instance *instance)
 {
     static const compute_t reynolds = 500.0;
-    static const double gamma = 0.9; // Upwind differencing factor in PDE discretisation
+    static const compute_t gamma = 0.9; // Upwind differencing factor in PDE discretisation
 
     // Get local copies of pointers to avoid excessive dereferencing in loop.
     compute_t * const * const velocity_x = region->velocity_x;
@@ -451,7 +467,7 @@ void region_compute_tentative_velocities(const struct region *const region, cons
         for (indexer_t v_idx = 1; v_idx < interior_extents.y; ++v_idx)
             if (flags[h_idx][v_idx] & CELL_FLUID && flags[h_idx + 1][v_idx] & CELL_FLUID) {
 
-                const double self_advection_x =
+                const compute_t self_advection_x =
                     (
                         (velocity_x[h_idx][v_idx] + velocity_x[h_idx + 1][v_idx]) *
                         (velocity_x[h_idx][v_idx] + velocity_x[h_idx + 1][v_idx]) +
@@ -463,7 +479,7 @@ void region_compute_tentative_velocities(const struct region *const region, cons
                         (velocity_x[h_idx - 1][v_idx] - velocity_x[h_idx][v_idx])
                     ) * quarter_resolution;
 
-                const double cross_advection_y =
+                const compute_t cross_advection_y =
                     (
                         (velocity_y[h_idx][v_idx] + velocity_y[h_idx + 1][v_idx]) *
                         (velocity_x[h_idx][v_idx] + velocity_x[h_idx][v_idx + 1]) +
@@ -476,7 +492,7 @@ void region_compute_tentative_velocities(const struct region *const region, cons
                         (velocity_x[h_idx][v_idx - 1] - velocity_x[h_idx][v_idx])
                     ) * quarter_resolution;
 
-                const double diffusion =
+                const compute_t diffusion =
                     (
                         velocity_x[h_idx + 1][v_idx] -
                         2.0 * velocity_x[h_idx][v_idx] +
@@ -501,7 +517,7 @@ void region_compute_tentative_velocities(const struct region *const region, cons
         for (indexer_t v_idx = 1; v_idx < interior_extents.y - 1; ++v_idx)
             if (flags[h_idx][v_idx] & CELL_FLUID && flags[h_idx][v_idx + 1] & CELL_FLUID) {
 
-                const double cross_advection_x =
+                const compute_t cross_advection_x =
                     (
                         (velocity_x[h_idx][v_idx] + velocity_x[h_idx][v_idx + 1]) *
                         (velocity_y[h_idx][v_idx] + velocity_y[h_idx + 1][v_idx]) +
@@ -514,7 +530,7 @@ void region_compute_tentative_velocities(const struct region *const region, cons
                         (velocity_y[h_idx - 1][v_idx] - velocity_y[h_idx][v_idx])
                     ) * quarter_resolution;
 
-                const double self_advection_y =
+                const compute_t self_advection_y =
                     (
                         (velocity_y[h_idx][v_idx] + velocity_y[h_idx][v_idx + 1]) *
                         (velocity_y[h_idx][v_idx] + velocity_y[h_idx][v_idx + 1]) +
@@ -526,7 +542,7 @@ void region_compute_tentative_velocities(const struct region *const region, cons
                         (velocity_y[h_idx][v_idx - 1] - velocity_y[h_idx][v_idx])
                     ) * quarter_resolution;
 
-                const double diffusion =
+                const compute_t diffusion =
                     (
                         velocity_y[h_idx + 1][v_idx] -
                         2.0 * velocity_y[h_idx][v_idx] +
@@ -583,7 +599,6 @@ void region_sor_cycle(const struct region *const region, const struct instance *
      */
 
     sor_cycle_phase(region, instance->sor_omega, SOR_RED);
-    #pragma omp barrier
     sor_cycle_phase(region, instance->sor_omega, SOR_BLACK);
 }
 
@@ -599,25 +614,26 @@ compute_t region_compute_poisson_residual(const struct region *const region)
 
     #pragma omp parallel for collapse(2) reduction(+:residual) schedule(static) default(none) \
         shared(interior_extents, region, step_sq)
+
     for (indexer_t h_idx = 1; h_idx < interior_extents.x; ++h_idx)
         for (indexer_t v_idx = 1; v_idx < interior_extents.y; ++v_idx)
             if (region->flags[h_idx][v_idx] & CELL_FLUID) {
-                const double epsilon_east = !!(region->flags[h_idx + 1][v_idx] & CELL_FLUID);
-                const double epsilon_west = !!(region->flags[h_idx - 1][v_idx] & CELL_FLUID);
-                const double epsilon_north = !!(region->flags[h_idx][v_idx + 1] & CELL_FLUID);
-                const double epsilon_south = !!(region->flags[h_idx][v_idx - 1] & CELL_FLUID);
+                const compute_t epsilon_east = !!(region->flags[h_idx + 1][v_idx] & CELL_FLUID);
+                const compute_t epsilon_west = !!(region->flags[h_idx - 1][v_idx] & CELL_FLUID);
+                const compute_t epsilon_north = !!(region->flags[h_idx][v_idx + 1] & CELL_FLUID);
+                const compute_t epsilon_south = !!(region->flags[h_idx][v_idx - 1] & CELL_FLUID);
 
-                const double x_residual = (
+                const compute_t x_residual = (
                     epsilon_east * (region->pressure[h_idx + 1][v_idx] - region->pressure[h_idx][v_idx]) -
                     epsilon_west * (region->pressure[h_idx][v_idx] - region->pressure[h_idx - 1][v_idx])
                 ) * step_sq;
 
-                const double y_residual = (
+                const compute_t y_residual = (
                     epsilon_north * (region->pressure[h_idx][v_idx + 1] - region->pressure[h_idx][v_idx]) -
                     epsilon_south * (region->pressure[h_idx][v_idx] - region->pressure[h_idx][v_idx - 1])
                 ) * step_sq;
 
-                const double add = x_residual + y_residual - region->poisson_source[h_idx][v_idx];
+                const compute_t add = x_residual + y_residual - region->poisson_source[h_idx][v_idx];
                 residual += add * add;
             }
 
@@ -628,6 +644,7 @@ void region_initialise(struct region *const region, const struct instance *const
 {
     // Populate all cells' information matrices with fixed initial values.
     #pragma omp parallel for collapse(2) schedule(static) shared(region) default(none)
+
     for (indexer_t h_idx = 0; h_idx < region->extents.x; ++h_idx)
         for (indexer_t v_idx = 0; v_idx < region->extents.y; ++v_idx) {
             region->velocity_x[h_idx][v_idx] = region->initial_velocity_x;
@@ -648,6 +665,7 @@ void region_initialise(struct region *const region, const struct instance *const
 
     #pragma omp parallel for schedule(static) default(none) \
         shared(region, instance, maximum_camber, edge_distance, thickness)
+
     for (indexer_t h_idx = 0; h_idx < region->extents.x; ++h_idx) {
         // Compute the vertical index boundaries of the airfoil body at the fixed horizontal index.
         const struct iterator v_idx_boundaries = get_initial_v_idx_boundaries(
@@ -665,6 +683,7 @@ void region_initialise(struct region *const region, const struct instance *const
     indexer_t fluid_cell_count = region->fluid_cell_count;
 
     #pragma omp parallel for collapse(2) reduction(-:fluid_cell_count) default(none) shared(flags, interior_extents)
+
     for (indexer_t h_idx = 1; h_idx < interior_extents.x; ++h_idx)
         for (indexer_t v_idx = 1; v_idx < interior_extents.y; ++v_idx)
             if (!(flags[h_idx][v_idx] & CELL_FLUID)) {
@@ -674,9 +693,9 @@ void region_initialise(struct region *const region, const struct instance *const
                     flags[h_idx][v_idx] |= CELL_FLUID_WEST;
                 if (flags[h_idx + 1][v_idx] & CELL_FLUID)
                     flags[h_idx][v_idx] |= CELL_FLUID_EAST;
-                if (flags[h_idx][v_idx + 1] & CELL_FLUID)
-                    flags[h_idx][v_idx] |= CELL_FLUID_SOUTH;
                 if (flags[h_idx][v_idx - 1] & CELL_FLUID)
+                    flags[h_idx][v_idx] |= CELL_FLUID_SOUTH;
+                if (flags[h_idx][v_idx + 1] & CELL_FLUID)
                     flags[h_idx][v_idx] |= CELL_FLUID_NORTH;
             }
 

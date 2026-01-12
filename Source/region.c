@@ -2,6 +2,7 @@
 // Created by od641 on 18/11/2025.
 //
 
+#include <limits.h>
 #include <math.h>
 #include <stdlib.h>
 #include <strings.h>
@@ -251,7 +252,7 @@ static void sor_cycle_phase(const struct region *const region, const compute_t o
 struct region region_create(const struct instance *const instance)
 {
     // Number of cells per unit-distance.
-    static const unsigned int resolution = 128;
+    static const unsigned int resolution = 256;
 
     // Scaled spatial dimensions by the resolution, to map problem size to problem cell counts.
     const struct dim2 cell_counts = {
@@ -430,6 +431,37 @@ void region_update_velocities(const struct region *const region, const struct in
                     region->velocity_y[h_idx][v_idx] = region->tentative_velocity_y[h_idx][v_idx] -
                         (region->pressure[h_idx][v_idx + 1] - region->pressure[h_idx][v_idx]) * pressure_diff_factor;
     }
+}
+
+compute_t region_get_timestep_interval(const struct region *region, const struct instance *instance)
+{
+    compute_t x_max = -INFINITY;
+    compute_t y_max = -INFINITY;
+
+    const indexer_t x_extent = region->extents.x;
+    const indexer_t y_extent = region->extents.y;
+    compute_t * const * const velocity_x = region->velocity_x;
+    compute_t * const * const velocity_y = region->velocity_y;
+
+    #pragma omp parallel default(none) shared(x_extent, y_extent, x_max, y_max, velocity_x, velocity_y)
+    {
+        #pragma omp for collapse(2) schedule(static) reduction(max:x_max) nowait
+        for (indexer_t h_idx = 0; h_idx < x_extent; ++h_idx)
+            for (indexer_t v_idx = 1; v_idx < y_extent; ++v_idx)
+                x_max = fmax(fabs(velocity_x[h_idx][v_idx]), x_max);
+
+        #pragma omp for collapse(2) schedule(static) reduction(max:x_max) nowait
+        for (indexer_t h_idx = 1; h_idx < x_extent; ++h_idx)
+            for (indexer_t v_idx = 0; v_idx < y_extent; ++v_idx)
+                y_max = fmax(fabs(velocity_y[h_idx][v_idx]), y_max);
+    }
+
+    const compute_t grid_spacing = 1.0 / region->resolution;
+    const compute_t cfl_limit = fmin(grid_spacing / x_max, grid_spacing / y_max);
+    const compute_t reynolds_delta = 1.0 / (1.0 / (grid_spacing * grid_spacing) +
+        1 / (grid_spacing * grid_spacing)) * 500 / 2.0;
+
+    return 0.5 * fmin(cfl_limit, reynolds_delta);
 }
 
 void region_compute_tentative_velocities(const struct region *const region, const struct instance *instance)

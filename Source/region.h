@@ -143,4 +143,13 @@ compute_t region_compute_poisson_residual(const struct region * region);
  */
 void region_update_velocities(const struct region *region, const struct instance *instance);
 
+/**
+ * Compute a new guess for the optimal timestep given the current velocities.
+ *
+ * @param region The region containing the velocities.
+ * @param instance The instance managing the target region.
+ * @return A timestep heuristic.
+ */
+compute_t region_get_timestep_interval(const struct region* region, const struct instance* instance);
+
 #endif // HIPC_ASSESSMENT_REGION_H

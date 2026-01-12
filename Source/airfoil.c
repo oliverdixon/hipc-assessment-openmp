@@ -20,14 +20,14 @@ static void serialise(const struct region *const region, const struct instance *
 
 int main()
 {
-    const struct instance instance = instance_create();
+    struct instance instance = instance_create();
     struct region region = region_create(&instance);
 
     instance_describe(&instance, stderr);
 
     region_initialise(&region, &instance);
 
-    static const compute_t max_simulation_runtime = 1.0;
+    static const compute_t max_simulation_runtime = 2.0;
     static const indexer_t sor_max_iterations = 100;
     static const compute_t sor_residual_epsilon = 0.001;
     static const indexer_t output_freq = 100;
@@ -36,7 +36,7 @@ int main()
     indexer_t step_iteration = 0;
 
     while (simulation_runtime < max_simulation_runtime) {
-        // \Delta_t timestep is fixed.
+        instance.timestep_duration = region_get_timestep_interval(&region, &instance);
         region_apply_boundary_conditions(&region);
         region_compute_tentative_velocities(&region, &instance);
         region_compute_poisson_source(&region, &instance);

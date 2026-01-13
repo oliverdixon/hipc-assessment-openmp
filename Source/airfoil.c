@@ -11,13 +11,6 @@
 #include "instance.h"
 #include "region.h"
 
-static void serialise(const struct region *const region, const struct instance *const instance)
-{
-    FILE * const output_fp = fopen("./out/airfoil.vtr", "w");
-    region_serialise_vtk(region, instance, output_fp);
-    fclose(output_fp);
-}
-
 int main()
 {
     struct instance instance = instance_create();
@@ -60,8 +53,6 @@ int main()
 
         ++step_iteration;
     }
-
-    serialise(&region, &instance);
 
     region_destroy(&region);
     return EXIT_SUCCESS;

@@ -25,7 +25,7 @@ if (CMAKE_C_COMPILER_ID STREQUAL "IntelLLVM")
     target_link_options(Airfoil_OpenMP PRIVATE -fuse-ld=lld)
     target_compile_options(Airfoil_OpenMP PRIVATE
             -axCORE-AVX2
-            -fast
+            -ffast-math
             -Rpass=loop-vectorize
             -Rpass-analysis=loop-vectorize
             -Rpass-missed=loop-vectorize

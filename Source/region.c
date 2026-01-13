@@ -188,9 +188,7 @@ static void sor_cycle_phase(const struct region *const region, const compute_t o
         .y = region->extents.y - 1,
     };
 
-    #pragma omp parallel for schedule(static) default(none) collapse(2) \
-        shared(interior_extents, region, phase, step_sq, omega)
-
+    #pragma omp for schedule(guided, 8) nowait
     for (indexer_t h_idx = 1; h_idx < interior_extents.x; ++h_idx)
         // Align to correct parity for RB indexing. See Figure 2 of https://arxiv.org/abs/1401.0763.
         for (indexer_t v_idx = 1 + (h_idx + 1 & 1 ^ (indexer_t) phase); v_idx < interior_extents.y; v_idx += 2) {
@@ -623,8 +621,14 @@ void region_sor_cycle(const struct region *const region, const struct instance *
      * red-phase black-phase loop to avoid the branch instruction and excessive BP failures.
      */
 
-    sor_cycle_phase(region, instance->sor_omega, SOR_RED);
-    sor_cycle_phase(region, instance->sor_omega, SOR_BLACK);
+    const compute_t omega = instance->sor_omega;
+
+    #pragma omp parallel default(none) shared(region, omega)
+    {
+        sor_cycle_phase(region, omega, SOR_RED);
+        #pragma omp barrier
+        sor_cycle_phase(region, omega, SOR_BLACK);
+    }
 }
 
 compute_t region_compute_poisson_residual(const struct region *const region)
